@@ -60,11 +60,13 @@ describe("AgentSession retry", () => {
 		maxRetries?: number;
 		maxAgentDelayMs?: number;
 		delayAssistantMessageEndMs?: number;
+		errorMessage?: string;
 	}) {
 		const failCount = options?.failCount ?? 1;
 		const maxRetries = options?.maxRetries ?? 3;
 		const maxAgentDelayMs = options?.maxAgentDelayMs ?? 60000;
 		const delayAssistantMessageEndMs = options?.delayAssistantMessageEndMs ?? 0;
+		const errorMessage = options?.errorMessage ?? "overloaded_error";
 		let callCount = 0;
 
 		const model = getModel("anthropic", "claude-sonnet-4-5")!;
@@ -78,7 +80,7 @@ describe("AgentSession retry", () => {
 					if (callCount <= failCount) {
 						const msg = createAssistantMessage("", {
 							stopReason: "error",
-							errorMessage: "overloaded_error",
+							errorMessage,
 						});
 						stream.push({ type: "start", partial: msg });
 						stream.push({ type: "error", reason: "error", error: msg });
@@ -231,6 +233,20 @@ describe("AgentSession retry", () => {
 		await session.prompt("Test");
 
 		expect(callCount).toBe(2);
+		expect(events).toEqual(["start:1", "end:success=true"]);
+	});
+
+	it("retries vLLM finish_reason: abort (server-side preemption)", async () => {
+		const created = await createSession({ failCount: 1, errorMessage: "Provider finish_reason: abort" });
+		const events: string[] = [];
+		created.session.subscribe((event) => {
+			if (event.type === "auto_retry_start") events.push(`start:${event.attempt}`);
+			if (event.type === "auto_retry_end") events.push(`end:success=${event.success}`);
+		});
+
+		await created.session.prompt("Test");
+
+		expect(created.getCallCount()).toBe(2);
 		expect(events).toEqual(["start:1", "end:success=true"]);
 	});
 
