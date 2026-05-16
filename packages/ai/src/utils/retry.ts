@@ -79,6 +79,11 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
 	// retry policy so callers can surface/abort the backoff (#1123).
 	"retry delay",
 
+	// vLLM servers (notably MTP/speculative-decoding builds) emit finish_reason:
+	// "abort" when a request is preempted under KV-cache pressure. Treat it as
+	// transient like other network/server errors so auto-retry resumes the turn.
+	"finish_reason: abort",
+
 	// Explicit retry guidance emitted mid-stream by OpenAI Responses and Bedrock
 	// stream exceptions (#6019).
 	"you can retry your request",
