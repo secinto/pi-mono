@@ -16,6 +16,14 @@ upstream  https://github.com/earendil-works/pi.git     # the parent
 
 If `upstream` is missing: `git remote add upstream https://github.com/earendil-works/pi.git`
 
+Pin `upstream` to fetch **only** `main` (avoids pulling dozens of feature/experiment
+branches on every fetch). Run once per clone — `.git/config` is not version-controlled,
+so this setup does not travel with the repo:
+
+```bash
+git config remote.upstream.fetch '+refs/heads/main:refs/remotes/upstream/main'
+```
+
 ## Our local commits (what we reapply on every sync)
 
 Only **non-generated** work is carried forward:
