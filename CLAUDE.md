@@ -32,6 +32,9 @@ Only **non-generated** work is carried forward:
   `packages/coding-agent/src/core/agent-session.ts`
 - `chore(scripts): add local pi build and status scripts` —
   `scripts/build-pi-local.sh`, `scripts/pi-status.sh`
+- `feat(coding-agent): persist compaction trigger reason in the session file` —
+  `packages/coding-agent/src/core/{session-manager,agent-session}.ts` + test.
+  Upstreamable; drop it if upstream lands an equivalent.
 
 ## Sync workflow (keep our commits on top of upstream)
 
