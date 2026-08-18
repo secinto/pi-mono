@@ -101,6 +101,19 @@ export interface CompactionEntry<T = unknown> extends SessionEntryBase {
 	fromHook?: boolean;
 	/** Complete prompt and tool state at this compaction boundary. */
 	systemMessage?: SystemMessage;
+	/**
+	 * What triggered this compaction. Undefined on entries written before this
+	 * field existed, and on callers that do not supply it.
+	 *
+	 * Without it a session file cannot explain its own compactions after the
+	 * fact: an overflow-recovery compaction (isRecoverableLength fires on a
+	 * length-stopped response at ANY context size) is indistinguishable from a
+	 * threshold compaction, so a compaction at 26% of the context window reads
+	 * as inexplicable.
+	 */
+	reason?: "manual" | "threshold" | "overflow";
+	/** True when the interrupted turn is retried after this compaction (overflow recovery). */
+	willRetry?: boolean;
 }
 
 export interface BranchSummaryEntry<T = unknown> extends SessionEntryBase {
@@ -1265,6 +1278,8 @@ export class SessionManager {
 		details?: T,
 		fromHook?: boolean,
 		usage?: Usage,
+		reason?: "manual" | "threshold" | "overflow",
+		willRetry?: boolean,
 	): string {
 		const timestamp = new Date().toISOString();
 		const systemMessage = getCurrentSystemMessage(this.buildSessionProjection().messages);
@@ -1281,6 +1296,8 @@ export class SessionManager {
 			usage,
 			fromHook,
 			...(systemMessage ? { systemMessage: { ...systemMessage, timestamp: new Date(timestamp).getTime() } } : {}),
+			...(reason !== undefined ? { reason } : {}),
+			...(willRetry !== undefined ? { willRetry } : {}),
 		};
 		this._appendEntry(entry);
 		return entry.id;
