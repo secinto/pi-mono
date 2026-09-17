@@ -1,83 +1,60 @@
 # pi-mono (secinto fork) — maintenance guide
 
-This repo is **`secinto/pi-mono`**, a fork of the upstream **`earendil-works/pi`**
-(formerly `badlogic/pi-mono`). We carry a small number of local commits on top of
-upstream and periodically resync.
+This repo is **`secinto/pi-mono`**, a fork of **`earendil-works/pi`** (formerly
+`badlogic/pi-mono`). We carry a few local commits on top of upstream and
+periodically rebase them onto the latest upstream `main`.
 
-## Remotes
-
-Both remotes use **HTTPS** (auth via the `gh` CLI credentials — there is no SSH key
-on this host, so SSH `git@github.com:` URLs fail with `publickey`):
+## Remotes — not version-controlled, set up once per clone
 
 ```
 origin    https://github.com/secinto/pi-mono.git      # our fork
 upstream  https://github.com/earendil-works/pi.git     # the parent
 ```
 
-If `upstream` is missing: `git remote add upstream https://github.com/earendil-works/pi.git`
-
-Pin `upstream` to fetch **only** `main` (avoids pulling dozens of feature/experiment
-branches on every fetch). Run once per clone — `.git/config` is not version-controlled,
-so this setup does not travel with the repo:
+Use HTTPS (auth via the `gh` CLI); SSH `git@github.com:` URLs fail on this host
+(no key). Pin `upstream` to fetch only `main`, otherwise every fetch pulls dozens
+of upstream feature branches:
 
 ```bash
+git remote add upstream https://github.com/earendil-works/pi.git
 git config remote.upstream.fetch '+refs/heads/main:refs/remotes/upstream/main'
 ```
 
-## Our local commits (what we reapply on every sync)
+## Our local commits
 
-Only **non-generated** work is carried forward:
+Only **non-generated** work is carried. The authoritative list, and the files
+each commit touches, is `git log --stat upstream/main..main` — do not duplicate
+it here. What git does not record:
 
-- `fix(agent): retry vLLM finish_reason "abort"` — real fix + test in
-  `packages/coding-agent/src/core/agent-session.ts`
-- `chore(scripts): add local pi build and status scripts` —
-  `scripts/build-pi-local.sh`, `scripts/pi-status.sh`
 - `feat(coding-agent): persist compaction trigger reason in the session file` —
-  `packages/coding-agent/src/core/{session-manager,agent-session}.ts` + test.
-  Upstreamable; drop it if upstream lands an equivalent.
+  upstreamable; drop it if upstream lands an equivalent.
 
-## Sync workflow (keep our commits on top of upstream)
+## Sync workflow
 
-```bash
-git fetch upstream
-git rebase upstream/main          # replays our commits onto the latest upstream
-git push --force-with-lease origin main
-```
-
-`--force-with-lease` is required because the rebase rewrites our commit SHAs; it
-safely aborts if someone else pushed to `origin/main` first.
-
-### Why GitHub's "Sync fork" button does not work
-
-Our `main` is **ahead** of upstream (it has our local commits), so GitHub can only
-fast-forward — it refuses and leaves the fork diverged. We must rebase locally
-instead. Uncommitted changes also block the rebase, so commit or stash first.
-
-## Generated files are disposable — do NOT carry them forward
-
-`packages/ai/src/models.generated.ts` and `packages/ai/src/image-models.generated.ts`
-are produced by `packages/ai/scripts/generate-models.ts` /
-`generate-image-models.ts`. Upstream regenerates them with fresher data, so local
-edits/regenerations are stale noise that only cause conflicts and revert upstream's
-newer model catalog. During a sync, **discard** local changes to these files and let
-upstream's versions win. If you need new model data, regenerate fresh after syncing
-rather than reapplying an old diff.
-
-> Note: model entries like `claude-opus-4-8` and the `cloudflare-ai-gateway` provider
-> are already upstream. The Cloudflare gateway is just one optional provider variant
-> (needs `CLOUDFLARE_API_KEY` + account/gateway IDs); the same model is also available
-> via the direct `anthropic` provider, so no Cloudflare account is required.
-
-## Safe-by-default sync (recommended for big resyncs)
+Never use GitHub's "Sync fork" button: it merges upstream *into* our branch,
+burying our commits under merge commits instead of keeping them on top, and it
+refuses outright on any conflict. Rebase locally instead (uncommitted changes
+block the rebase — commit or stash first):
 
 ```bash
-git branch backup/main-presync-$(date +%Y%m%d) main   # snapshot first
+git branch backup/main-presync-$(date +%Y%m%d) main   # snapshot
 git fetch upstream
-git rebase upstream/main
-# ...verify build/tests, then:
-git push --force-with-lease origin main
-git branch -D backup/main-presync-YYYYMMDD             # clean up once happy
+git rebase upstream/main                             # replays our commits onto upstream
+# resolve conflicts, verify (next section), then:
+git push --force-with-lease origin main              # rebase rewrote our SHAs; aborts if origin moved
+git branch -D backup/main-presync-*                  # once happy
 ```
+
+Conflict rules:
+
+- **Generated files** (header says "auto-generated", e.g. everything under
+  `packages/ai/src/` produced by `scripts/generate-models.ts`): take upstream's
+  version. Local regenerations are stale noise; regenerate after the sync if you
+  need fresher data.
+- **Carried tests that copy an upstream test harness** (e.g.
+  `agent-session-retry.test.ts`): when upstream changes the harness, port our
+  test and fold it into the original commit (`git commit --fixup=<sha>`, then
+  `GIT_SEQUENCE_EDITOR=true git rebase -i --autosquash upstream/main`).
 
 ## Verifying after a sync — refresh the local environment first
 
@@ -85,19 +62,13 @@ Two gitignored, locally generated inputs go stale between syncs and produce
 errors that look like upstream bugs (or tempt you to hack the source to compile):
 
 ```bash
-npm ci                        # node_modules must match the (upstream-bumped) lockfile,
-                              # e.g. @anthropic-ai/sdk — never add `as any` casts to work
-                              # around an old install
-npm run hydrate:model-data    # regenerates packages/ai/src/providers/data/*.json from the
-                              # live catalog; upstream tests reference current model IDs
+npm ci                        # node_modules must match the (upstream-bumped) lockfile;
+                              # never add `as any` casts to work around an old install
+npm run hydrate:model-data    # regenerates packages/ai/src/providers/data/*.json;
+                              # upstream tests reference current model IDs
 npm run check                 # what the husky pre-commit hook runs (tsgo, biome, ...)
 ```
 
 Upstream CI does the same (`npm ci` → `npm run build` → `npm run check`), so if
-`check` fails only in test files that are byte-identical to `upstream/main`, the
-local environment is stale — not the code.
-
-Our carried tests (e.g. `agent-session-retry.test.ts`) copy upstream's session
-test harness; when upstream changes that harness (`createModelRegistry`,
-`modelRuntime`, ...), port our test to match and fold it into the original commit
-with `git commit --fixup=<sha>` + `GIT_SEQUENCE_EDITOR=true git rebase -i --autosquash upstream/main`.
+`check` fails only in files that are byte-identical to `upstream/main`, the local
+environment is stale — not the code.
