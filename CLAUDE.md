@@ -78,3 +78,26 @@ git rebase upstream/main
 git push --force-with-lease origin main
 git branch -D backup/main-presync-YYYYMMDD             # clean up once happy
 ```
+
+## Verifying after a sync — refresh the local environment first
+
+Two gitignored, locally generated inputs go stale between syncs and produce
+errors that look like upstream bugs (or tempt you to hack the source to compile):
+
+```bash
+npm ci                        # node_modules must match the (upstream-bumped) lockfile,
+                              # e.g. @anthropic-ai/sdk — never add `as any` casts to work
+                              # around an old install
+npm run hydrate:model-data    # regenerates packages/ai/src/providers/data/*.json from the
+                              # live catalog; upstream tests reference current model IDs
+npm run check                 # what the husky pre-commit hook runs (tsgo, biome, ...)
+```
+
+Upstream CI does the same (`npm ci` → `npm run build` → `npm run check`), so if
+`check` fails only in test files that are byte-identical to `upstream/main`, the
+local environment is stale — not the code.
+
+Our carried tests (e.g. `agent-session-retry.test.ts`) copy upstream's session
+test harness; when upstream changes that harness (`createModelRegistry`,
+`modelRuntime`, ...), port our test to match and fold it into the original commit
+with `git commit --fixup=<sha>` + `GIT_SEQUENCE_EDITOR=true git rebase -i --autosquash upstream/main`.
