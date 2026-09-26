@@ -59,15 +59,24 @@ export async function executeBashWithOperations(
 
 	let tempFilePath: string | undefined;
 	let tempFileStream: WriteStream | undefined;
+	let tempFileFailed = false;
 	let totalBytes = 0;
 
 	const ensureTempFile = () => {
-		if (tempFilePath) {
+		if (tempFilePath || tempFileFailed) {
 			return;
 		}
 		const id = randomBytes(8).toString("hex");
 		tempFilePath = join(tmpdir(), `pi-bash-${id}.log`);
 		tempFileStream = createWriteStream(tempFilePath);
+		// The temp file is only a copy of the full output. A full disk or a
+		// missing temp dir must degrade to "no full-output file", not surface
+		// as an unhandled 'error' event that kills the process mid-command.
+		tempFileStream.on("error", () => {
+			tempFileFailed = true;
+			tempFileStream = undefined;
+			tempFilePath = undefined;
+		});
 		for (const chunk of outputChunks) {
 			tempFileStream.write(chunk);
 		}
