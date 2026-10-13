@@ -10,10 +10,10 @@
 #   --clean         Run `npm run clean` before building.
 #   --skip-install  Skip `npm install --ignore-scripts`.
 #   --skip-link     Skip the global npm link step.
-#   --no-deps       Build only packages/coding-agent (skip tui/ai/agent).
+#   --no-deps       Build only packages/coding-agent (skip its workspace deps).
 #                   Use after a prior full build when only coding-agent src changed.
 #
-# Build order matches root package.json: tui -> ai -> agent -> coding-agent.
+# Build order matches the root package.json "build" script.
 
 set -euo pipefail
 
@@ -61,9 +61,9 @@ build_pkg() {
 }
 
 if [[ "$NO_DEPS" != true ]]; then
-    build_pkg tui
-    build_pkg ai
-    build_pkg agent
+    for pkg in chord tui telemetry codemode mcp ai durable env agent; do
+        build_pkg "$pkg"
+    done
 fi
 build_pkg coding-agent
 
