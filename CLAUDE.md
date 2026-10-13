@@ -34,7 +34,8 @@ it here. What git does not record:
 Never use GitHub's "Sync fork" button: it merges upstream *into* our branch,
 burying our commits under merge commits instead of keeping them on top, and it
 refuses outright on any conflict. Rebase locally instead (uncommitted changes
-block the rebase — commit or stash first):
+block the rebase — commit or stash first). `scripts/sync.sh [--push]` automates
+the steps below plus the workflow check and the verification build. Manually:
 
 ```bash
 git branch backup/main-presync-$(date +%Y%m%d) main   # snapshot
@@ -44,6 +45,13 @@ git rebase upstream/main                             # replays our commits onto 
 git push --force-with-lease origin main              # rebase rewrote our SHAs; aborts if origin moved
 git branch -D backup/main-presync-*                  # once happy
 ```
+
+All GitHub Actions workflows are **disabled on the fork** (repo setting, not a
+file change). Upstream's workflows otherwise run here too, and some push to
+`main`: `nix.yml`'s `commit-pin` job committed a bot Nix pin that later blocked a
+pull. Workflows upstream adds arrive enabled, so after each sync check
+`gh workflow list -R secinto/pi-mono --all` and disable any active one with
+`gh workflow disable <file> -R secinto/pi-mono`.
 
 Conflict rules:
 
