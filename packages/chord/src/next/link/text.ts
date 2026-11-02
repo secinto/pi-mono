@@ -8,6 +8,7 @@
 
 import {
 	type BoundEntry,
+	CAUSE_KINDS,
 	type Codec,
 	type FailedMember,
 	type Message,
@@ -91,7 +92,7 @@ function ownTuple(message: Message): string {
 		case "state":
 			return `["s",[${message.holds.map(stateEntry).join(",")}]]`;
 		case "failed": {
-			const kind = message.cause.kind === "transient" ? "t" : "b";
+			const kind = message.cause.kind[0];
 			const retryIn = message.retryIn === undefined ? [] : [message.retryIn];
 			return json(["f", message.hold, kind, message.cause.error, ...retryIn]);
 		}
@@ -104,7 +105,7 @@ function ownTuple(message: Message): string {
 		case "revoke":
 			return json(["V", message.revocation]);
 		case "retry":
-			return json(["T", message.hold]);
+			return json(["T", message.hold, message.hops]);
 		case "loading":
 			return json(["l", message.hold]);
 		case "ack":
@@ -257,10 +258,11 @@ function fromFields(fields: unknown[], rest: Uint8Array): Message {
 			};
 		case "f": {
 			arity(3, 4);
-			if (f[1] !== "t" && f[1] !== "b") throw new Error("text: an unknown failure kind");
+			const causeKind = CAUSE_KINDS.find((each) => each[0] === f[1]);
+			if (causeKind === undefined) throw new Error("text: an unknown failure kind");
 			// The schema check after decoding establishes the wire error.
 			const error = f[2] as Extract<Message, { kind: "error" }>["error"];
-			const cause = { kind: f[1] === "t" ? "transient" : "broken", error } as const;
+			const cause = { kind: causeKind, error };
 			return { kind: "failed", hold: field(0), cause, ...(f.length === 4 ? { retryIn: field<number>(3) } : {}) };
 		}
 		case "r":
@@ -276,8 +278,8 @@ function fromFields(fields: unknown[], rest: Uint8Array): Message {
 			arity(1);
 			return { kind: "revoke", revocation: f[0] };
 		case "T":
-			arity(1);
-			return { kind: "retry", hold: field(0) };
+			arity(2);
+			return { kind: "retry", hold: field(0), hops: field(1) };
 		case "l":
 			arity(1);
 			return { kind: "loading", hold: field(0) };

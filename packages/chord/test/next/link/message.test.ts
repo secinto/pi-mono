@@ -100,6 +100,12 @@ const EVERY_KIND: Message[] = [
 		cause: { kind: "transient", error: { kind: "chord", error: { code: "unavailable", message: "m" } } },
 		retryIn: 0,
 	},
+	// Not the object's fault (dependency model §2): no backoff window, an event wakes it.
+	{
+		kind: "failed",
+		hold: 0,
+		cause: { kind: "waiting", error: { kind: "chord", error: { code: "contract_mismatch", message: "m" } } },
+	},
 	// The wire error format in `failed` and `gone`: a plugin's error travels too.
 	{ kind: "failed", hold: 0, cause: { kind: "broken", error: { kind: "plugin", code: "config", message: "m" } } },
 	{ kind: "gone", hold: 1, error: { kind: "plugin", code: "config", message: "m", details: { at: 1 } } },
@@ -109,7 +115,9 @@ const EVERY_KIND: Message[] = [
 		cause: { kind: "transient", error: { kind: "chord", error: { code: "unavailable", message: "m" } } },
 		retryIn: 60_000,
 	},
-	{ kind: "retry", hold: 300 },
+	// With its hop budget (audit A5): the first host's, and the last one passed on.
+	{ kind: "retry", hold: 300, hops: 16 },
+	{ kind: "retry", hold: 300, hops: 1 },
 	{ kind: "loading", hold: 300 },
 	{ kind: "result", call: 3, value: '{"n":1}' },
 	{ kind: "result", call: 3 },
@@ -131,7 +139,7 @@ const EVERY_KIND: Message[] = [
 	{ kind: "release", origin: 2, hold: 3 },
 	{ kind: "call", origin: 2, call: 1, hold: 3, method: 0, args: "[1]" },
 	{ kind: "abort", origin: 2, call: 1 },
-	{ kind: "retry", origin: 2, hold: 3 },
+	{ kind: "retry", origin: 2, hold: 3, hops: 16 },
 	{ kind: "bound", origin: 2, holds: [{ hold: 3, variant: 0, members: [], failed: [] }] },
 	{ kind: "state", origin: 2, holds: [] },
 	{
@@ -333,6 +341,21 @@ describe("the binary codec", () => {
 		expect([...binaryCodec.encode({ kind: "closed", origin: 1 })]).toEqual([14 | 0x80, 1]);
 	});
 
+	it("writes a failure's cause as one byte, 0 transient, 1 broken, 2 waiting (dependency model §2); refuses another", () => {
+		const error = { kind: "chord", error: { code: "unavailable", message: "m" } } as const;
+		const failed = (kind: "transient" | "broken" | "waiting"): Message => ({
+			kind: "failed",
+			hold: 0,
+			cause: { kind, error },
+		});
+		expect(
+			["transient", "broken", "waiting"].map((kind) => binaryCodec.encode(failed(kind as "waiting"))[2]),
+		).toEqual([0, 1, 2]);
+		const unknown = binaryCodec.encode(failed("waiting"));
+		unknown[2] = 3;
+		expect(() => binaryCodec.decode(unknown)).toThrow("an unknown failure kind");
+	});
+
 	it("costs a state entry without retirements no byte: the failure count is doubled, plus one when they follow", () => {
 		const state = (retired: number[]): Message => ({
 			kind: "state",
@@ -413,8 +436,8 @@ describe("the binary codec", () => {
 		expect(() => binaryCodec.decode(new Uint8Array([1, 0, 1, 0xff]))).toThrow();
 	});
 
-	it("writes retry and loading as their kind and hold, and failed's retryIn as one more than it (0: absent)", () => {
-		expect([...binaryCodec.encode({ kind: "retry", hold: 300 })]).toEqual([11, 0xac, 0x02]);
+	it("writes retry as its kind, hold and hops, loading as its kind and hold, and failed's retryIn as one more than it (0: absent)", () => {
+		expect([...binaryCodec.encode({ kind: "retry", hold: 300, hops: 16 })]).toEqual([11, 0xac, 0x02, 16]);
 		expect([...binaryCodec.encode({ kind: "loading", hold: 1 })]).toEqual([12, 1]);
 		const cause = { kind: "broken", error: { kind: "chord", error: { code: "released", message: "" } } } as const;
 		const absent = binaryCodec.encode({ kind: "failed", hold: 0, cause });
@@ -434,7 +457,7 @@ describe("the text codec", () => {
 		expect(text({ kind: "bound", holds: [{ hold: 0, variant: 1, members, failed: [] }] })).toBe(
 			'["b",[[0,1,[[0,[0,5]]]]]]',
 		);
-		expect(text({ kind: "retry", hold: 2 })).toBe('["T",2]');
+		expect(text({ kind: "retry", hold: 2, hops: 16 })).toBe('["T",2,16]');
 		expect(text({ kind: "loading", hold: 2 })).toBe('["l",2]');
 		const cause = {
 			kind: "transient",
@@ -446,6 +469,10 @@ describe("the text codec", () => {
 		expect(text({ kind: "failed", hold: 2, cause, retryIn: 750 })).toBe(
 			'["f",2,"t",{"kind":"chord","error":{"code":"unavailable","message":"m"}},750]',
 		);
+		expect(text({ kind: "failed", hold: 2, cause: { ...cause, kind: "waiting" } })).toBe(
+			'["f",2,"w",{"kind":"chord","error":{"code":"unavailable","message":"m"}}]',
+		);
+		expect(() => textCodec.decode(new TextEncoder().encode('["f",2,"x",{}]'))).toThrow("an unknown failure kind");
 		expect(text({ kind: "ack" })).toBe('["a"]');
 		// An origin wraps the message's own tuple.
 		expect(text({ kind: "release", origin: 4, hold: 3 })).toBe('["@",4,["R",3]]');
@@ -526,6 +553,14 @@ describe("the text codec", () => {
 		expect(() => decode('["H",0,"t",1,"0123456789abcdef",[0,{}],["server"]]')).toThrow("an address is a pair");
 		const hold = { kind: "hold", hold: 0, type: "t", version: 1, fingerprint: "0123456789abcdef", params: "{}" };
 		expect(() => checkMessage(hold, context)).toThrow("message schema");
+	});
+
+	it("refuses a retry without its hop budget, or with one outside 1..16 (audit A5)", () => {
+		const decode = (tuple: string) => textCodec.decode(new TextEncoder().encode(tuple));
+		expect(() => decode('["T",2]')).toThrow('a "T" message with 1 fields');
+		for (const hops of [0, 17]) {
+			expect(() => checkMessage({ kind: "retry", hold: 2, hops }, context)).toThrow("message schema");
+		}
 	});
 });
 

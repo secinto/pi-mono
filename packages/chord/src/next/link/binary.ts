@@ -6,6 +6,7 @@
 
 import {
 	type BoundEntry,
+	CAUSE_KINDS,
 	type Codec,
 	type FailedMember,
 	type Message,
@@ -122,9 +123,12 @@ function encodeFields(message: Message, writer: Writer): void {
 			return;
 		}
 		case "release":
-		case "retry":
 		case "loading":
 			writer.varint(message.hold);
+			return;
+		case "retry":
+			writer.varint(message.hold);
+			writer.varint(message.hops);
 			return;
 		case "call":
 			writer.varint(message.call);
@@ -162,7 +166,7 @@ function encodeFields(message: Message, writer: Writer): void {
 			return;
 		case "failed":
 			writer.varint(message.hold);
-			writer.byte(message.cause.kind === "transient" ? 0 : 1);
+			writer.byte(CAUSE_KINDS.indexOf(message.cause.kind));
 			writer.json(message.cause.error);
 			// 0 when absent, else one more than the delay.
 			writer.varint(message.retryIn === undefined ? 0 : message.retryIn + 1);
@@ -224,9 +228,10 @@ function decodeFields(kind: (typeof KINDS)[number], reader: Reader): Message {
 			};
 		}
 		case "release":
-		case "retry":
 		case "loading":
 			return { kind, hold: reader.varint() };
+		case "retry":
+			return { kind, hold: reader.varint(), hops: reader.varint() };
 		case "call": {
 			const [call, hold, method] = [reader.varint(), reader.varint(), reader.varint()];
 			return { kind, call, hold, method, ...reader.payload("args") };
@@ -255,15 +260,15 @@ function decodeFields(kind: (typeof KINDS)[number], reader: Reader): Message {
 		}
 		case "failed": {
 			const hold = reader.varint();
-			const cause = reader.byte();
-			if (cause > 1) throw new Error("binary: an unknown failure kind");
+			const cause = CAUSE_KINDS[reader.byte()];
+			if (cause === undefined) throw new Error("binary: an unknown failure kind");
 			// The schema check after decoding establishes the wire error.
 			const error = reader.json() as Extract<Message, { kind: "error" }>["error"];
 			const retryIn = reader.varint();
 			return {
 				kind,
 				hold,
-				cause: { kind: cause === 0 ? "transient" : "broken", error },
+				cause: { kind: cause, error },
 				...(retryIn === 0 ? {} : { retryIn: retryIn - 1 }),
 			};
 		}

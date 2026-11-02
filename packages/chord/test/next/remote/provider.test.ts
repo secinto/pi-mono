@@ -74,13 +74,13 @@ const READER = wireNames(Notes, "reader");
 const { add, fail, wait } = EDITOR.methods as { add: number; fail: number; wait: number };
 
 /** A server serving `Notes` and a raw consumer peer stamped `child`. */
-async function notesServer(child: TestPrincipal = { kind: "owner" }) {
+async function notesServer(child: TestPrincipal = { kind: "owner" }, role: "child" | "parent" = "child") {
 	let probe: NotesProbe | undefined;
 	const linked = await rawLinked(
 		(h) => {
 			probe = serveNotes(h);
 		},
-		{ child },
+		{ child, role },
 	);
 	return { ...linked, probe: probe! };
 }
@@ -117,14 +117,14 @@ forEachCodec(() => {
 				{ fingerprint: "0000000000000000" },
 				{ code: "contract_mismatch", message: "app.notes v1 does not match the served v1" },
 			],
-		])("refuse %s with a broken failed", async (_, override, error) => {
+		])("keep %s refused, failed { waiting }", async (_, override, error) => {
 			const { peer } = await notesServer();
 			const { type, ...rest } = override as { type?: string };
 			hold(peer, 0, { ...Notes, name: type ?? Notes.name } as Contract, { session: "S1" }, rest);
-			expect(await peer.next("failed")).toMatchObject({
-				hold: 0,
-				cause: { kind: "broken", error: { kind: "chord", error } },
-			});
+			const failed = await peer.next("failed");
+			expect(failed).toMatchObject({ hold: 0, cause: { kind: "waiting", error: { kind: "chord", error } } });
+			// No backoff window: an event (a publication) wakes it.
+			expect(failed.retryIn).toBeUndefined();
 		});
 
 		it("refuse invalid params with a broken failed", async () => {
@@ -135,7 +135,7 @@ forEachCodec(() => {
 			});
 		});
 
-		it("arriving before load resolved wait for it", async () => {
+		it("arriving before the publication wait for it, and bind before the start barrier is over", async () => {
 			const server = createHost<TestPrincipal>({
 				address: Server(),
 				principal: { kind: "server" },
@@ -505,12 +505,12 @@ forEachCodec(() => {
 	});
 
 	describe("local types over a link", () => {
-		it("never cross one", async () => {
+		it("never cross one: a hold naming one is not served (failed { waiting })", async () => {
 			const Store = local("app.store", { version: 1, params: {}, members: { n: int() } });
 			const { peer } = await rawLinked((h) => h.serve(Store, () => ({ n: constant(1) })));
 			hold(peer, 0, Store, {});
 			expect(await peer.next("failed")).toMatchObject({
-				cause: { kind: "broken", error: { kind: "chord", error: { code: "unavailable" } } },
+				cause: { kind: "waiting", error: { kind: "chord", error: { code: "unavailable" } } },
 			});
 		});
 	});
@@ -551,7 +551,7 @@ function serveGrid(h: FacetHost<TestPrincipal>): void {
 }
 
 /** A server serving `Notes` and `Grid` to a raw peer that acks only when told, the link's context counting. */
-async function slowConsumer() {
+async function slowConsumer(role: "child" | "parent" = "child") {
 	const counting = await metered();
 	const server = createHost<TestPrincipal>({ address: Server(), principal: { kind: "server" }, onError: () => {} });
 	await server.load(
@@ -567,7 +567,9 @@ async function slowConsumer() {
 		context,
 	);
 	const [a, b] = memoryLinkPair();
-	server.accept(a, { principal: { kind: "owner" }, codec: testCodec() }, counting.context);
+	const options = { principal: { kind: "owner" }, codec: testCodec() } as const;
+	if (role === "parent") server.connect(a, options, counting.context);
+	else server.accept(a, options, counting.context);
 	const peer = new RawPeer(b, { ack: false });
 	await transported();
 	return { server, peer, counts: counting.counts };
@@ -667,9 +669,9 @@ forEachCodec(() => {
 		});
 	});
 
-	describe("origins at the provider", () => {
+	describe("origins at the provider (a relay's: on its parent link)", () => {
 		it("key holds and calls by (origin, id): the same ids on two origins are two holds; answers carry the origin", async () => {
-			const { peer } = await slowConsumer();
+			const { peer } = await slowConsumer("parent");
 			hold(peer, 0, Notes, { session: "S1" });
 			hold(peer, 0, Notes, { session: "S2" }, {}, 3);
 			const [own, relayed] = [await peer.next("bound"), await peer.next("bound")];
@@ -685,7 +687,7 @@ forEachCodec(() => {
 		});
 
 		it("keep a window per origin: a stalled origin folds its commits, another keeps receiving each", async () => {
-			const { server, peer } = await slowConsumer();
+			const { server, peer } = await slowConsumer("parent");
 			hold(peer, 0, Notes, { session: "S1" });
 			hold(peer, 0, Notes, { session: "S1" }, {}, 1);
 			await peer.next("bound");
@@ -710,7 +712,7 @@ forEachCodec(() => {
 		});
 
 		it("count calls per origin against N: 256 on each of two origins run, one more on one closes the link", async () => {
-			const { peer, errors } = await notesServer();
+			const { peer, errors } = await notesServer({ kind: "owner" }, "parent");
 			hold(peer, 0, Notes, { session: "S1" });
 			hold(peer, 0, Notes, { session: "S1" }, {}, 1);
 			await peer.next("bound");
@@ -730,7 +732,7 @@ forEachCodec(() => {
 		});
 
 		it("ignore a call on a hold they do not know before counting it (Q1)", async () => {
-			const { peer, errors } = await notesServer();
+			const { peer, errors } = await notesServer({ kind: "owner" }, "parent");
 			hold(peer, 0, Notes, { session: "S1" });
 			await peer.next("bound");
 			for (let id = 0; id < 256; id++) call(peer, id, 0, wait);
@@ -742,7 +744,7 @@ forEachCodec(() => {
 		});
 
 		it("closed releases the origin's holds and aborts its calls; another origin keeps its own", async () => {
-			const { peer, probe, server } = await notesServer();
+			const { peer, probe, server } = await notesServer({ kind: "owner" }, "parent");
 			hold(peer, 0, Notes, { session: "S1" });
 			hold(peer, 0, Notes, { session: "S2" }, {}, 2);
 			await peer.next("bound");
@@ -824,7 +826,7 @@ forEachCodec(() => {
 				push.call(this, ops);
 			};
 			try {
-				const { server, peer } = await slowConsumer();
+				const { server, peer } = await slowConsumer("parent");
 				hold(peer, 0, Notes, { session: "S1" }, {}, 1);
 				await peer.next("bound");
 				for (const text of ["a", "b", "c"]) await addNote(server, "S1", text);

@@ -30,7 +30,7 @@ import { basename, join, resolve } from "path";
 import { createInterface } from "readline";
 import { StringDecoder } from "string_decoder";
 import { APP_NAME, getAgentDir as getDefaultAgentDir, getSessionsDir } from "../config.ts";
-import { normalizePath, resolvePath } from "../utils/paths.ts";
+import { normalizePath, pathsEqual, resolvePath } from "../utils/paths.ts";
 import {
 	type BashExecutionMessage,
 	type CustomMessage,
@@ -529,7 +529,8 @@ export function buildContextEntries(
  * If leafId is provided, walks from that entry to root.
  * Handles compaction and branch summaries along the path.
  */
-function projectContextEntry(entry: SessionEntry, edit: ContextEditEntry | undefined): AgentMessage[] {
+/** Project one entry into model-visible messages, applying its latest context edit if any. */
+export function projectContextEntry(entry: SessionEntry, edit: ContextEditEntry | undefined): AgentMessage[] {
 	const messages = sessionEntryToContextMessages(entry);
 	if (!edit) return messages;
 	const replacement = edit.replacement;
@@ -755,7 +756,7 @@ function getSessionHeaderCwd(header: SessionHeader): string | undefined {
 }
 
 function sessionCwdMatches(cwd: string | undefined, resolvedCwd: string): boolean {
-	return cwd !== undefined && cwd !== "" && resolvePath(cwd) === resolvedCwd;
+	return cwd !== undefined && cwd !== "" && pathsEqual(resolvePath(cwd), resolvedCwd);
 }
 
 /** Exported for testing */
@@ -1159,7 +1160,7 @@ export class SessionManager {
 	}
 
 	usesDefaultSessionDir(): boolean {
-		return this.sessionDir === getDefaultSessionDirPath(this.cwd);
+		return pathsEqual(this.sessionDir, getDefaultSessionDirPath(this.cwd));
 	}
 
 	getSessionId(): string {
@@ -1819,7 +1820,7 @@ export class SessionManager {
 	 */
 	static continueRecent(cwd: string, sessionDir?: string): SessionManager {
 		const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(cwd);
-		const filterCwd = sessionDir !== undefined && dir !== getDefaultSessionDirPath(cwd);
+		const filterCwd = sessionDir !== undefined && !pathsEqual(dir, getDefaultSessionDirPath(cwd));
 		const mostRecent = findMostRecentSession(dir, filterCwd ? cwd : undefined);
 		if (mostRecent) {
 			return new SessionManager(cwd, dir, mostRecent, true);
@@ -1905,7 +1906,7 @@ export class SessionManager {
 	 */
 	static findById(cwd: string, id: string, sessionDir?: string): string | undefined {
 		const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(cwd);
-		const filterCwd = sessionDir !== undefined && dir !== getDefaultSessionDirPath(cwd);
+		const filterCwd = sessionDir !== undefined && !pathsEqual(dir, getDefaultSessionDirPath(cwd));
 		const resolvedCwd = resolvePath(cwd);
 
 		try {
@@ -1936,7 +1937,7 @@ export class SessionManager {
 		signal?: AbortSignal,
 	): Promise<SessionInfo[]> {
 		const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(cwd);
-		const filterCwd = sessionDir !== undefined && dir !== getDefaultSessionDirPath(cwd);
+		const filterCwd = sessionDir !== undefined && !pathsEqual(dir, getDefaultSessionDirPath(cwd));
 		const resolvedCwd = resolvePath(cwd);
 		const includeSession = (session: SessionInfo) => !filterCwd || sessionCwdMatches(session.cwd, resolvedCwd);
 		const progress: SessionListProgress | undefined = onProgress
